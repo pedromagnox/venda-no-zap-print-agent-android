@@ -8,3 +8,4 @@ google-services.json
 captures/
 .externalNativeBuild/
 .cxx/
+dist/

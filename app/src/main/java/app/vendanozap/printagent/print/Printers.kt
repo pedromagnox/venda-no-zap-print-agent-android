@@ -43,11 +43,28 @@ object Printers {
      */
     @SuppressLint("MissingPermission") // BLUETOOTH_CONNECT validada pelo chamador
     suspend fun print(context: Context, config: PrinterConfig, bytes: ByteArray) {
+        val payload = withKanjiOff(bytes)
         withContext(Dispatchers.IO) {
             when (config.type) {
-                PrinterType.BLUETOOTH -> printBluetooth(context, config.address, bytes)
-                PrinterType.TCP -> printTcp(config.address, config.port, bytes)
+                PrinterType.BLUETOOTH -> printBluetooth(context, config.address, payload)
+                PrinterType.TCP -> printTcp(config.address, config.port, payload)
             }
+        }
+    }
+
+    /**
+     * Térmicas chinesas baratas ligam modo CJK por padrão: bytes altos são
+     * consumidos em PARES (dois acentos viram um ideograma) e o cupom sai
+     * "AcentuaÚ". FS . (cancel Kanji) desliga. Como ESC @ reseta o modo, o
+     * comando precisa vir DEPOIS do init do payload — injeta lá quando o job
+     * começa com ESC @, senão prefixa. Inofensivo em Epson-compatible real.
+     */
+    private fun withKanjiOff(bytes: ByteArray): ByteArray {
+        val fsDot = byteArrayOf(0x1C, 0x2E)
+        return if (bytes.size >= 2 && bytes[0] == 0x1B.toByte() && bytes[1] == 0x40.toByte()) {
+            byteArrayOf(bytes[0], bytes[1]) + fsDot + bytes.copyOfRange(2, bytes.size)
+        } else {
+            fsDot + bytes
         }
     }
 
@@ -112,38 +129,68 @@ object TestReceipt {
         'Õ' to 0xE5, 'Ú' to 0xE9, '°' to 0xF8,
     )
 
-    private fun encode(text: String): ByteArray {
+    /** CP860 (português clássico) — vários acentos vivem em posições diferentes do CP850/858. */
+    private val CP860: Map<Char, Int> = mapOf(
+        'Ç' to 0x80, 'ü' to 0x81, 'é' to 0x82, 'â' to 0x83, 'ã' to 0x84, 'à' to 0x85,
+        'Á' to 0x86, 'ç' to 0x87, 'ê' to 0x88, 'Ê' to 0x89, 'è' to 0x8A, 'Í' to 0x8B,
+        'Ô' to 0x8C, 'ì' to 0x8D, 'Ã' to 0x8E, 'Â' to 0x8F, 'É' to 0x90, 'À' to 0x91,
+        'È' to 0x92, 'ô' to 0x93, 'õ' to 0x94, 'ò' to 0x95, 'Ú' to 0x96, 'ù' to 0x97,
+        'Ì' to 0x98, 'Õ' to 0x99, 'Ü' to 0x9A, 'Ù' to 0x9D, 'Ó' to 0x9F,
+        'á' to 0xA0, 'í' to 0xA1, 'ó' to 0xA2, 'ú' to 0xA3, 'ñ' to 0xA4, 'Ñ' to 0xA5,
+        'ª' to 0xA6, 'º' to 0xA7, 'Ò' to 0xA9,
+    )
+
+    private fun encodeWith(table: Map<Char, Int>, text: String): ByteArray {
         val out = ByteArray(text.length)
         for (i in text.indices) {
             val c = text[i]
             out[i] = when {
                 c.code < 0x80 -> c.code.toByte()
-                CP858.containsKey(c) -> CP858.getValue(c).toByte()
+                table.containsKey(c) -> table.getValue(c).toByte()
                 else -> '?'.code.toByte()
             }
         }
         return out
     }
 
+    private fun ascii(text: String): ByteArray =
+        java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}"), "")
+            .map { if (it.code < 0x80) it.code.toByte() else '?'.code.toByte() }
+            .toByteArray()
+
+    private const val SAMPLE = "ÁÉÍÓÚ áéíóú ãõ çÇ êô\n"
+    private val ESC = 0x1B.toByte()
+    private val GS = 0x1D.toByte()
+    private fun escT(table: Int) = byteArrayOf(ESC, 't'.code.toByte(), table.toByte())
+
+    /**
+     * Cupom de DIAGNÓSTICO: imprime a mesma frase acentuada em três codepages
+     * (ESC t 19/2/3 = CP858/CP850/CP860). Clonas chinesas variam o mapa de
+     * tabelas entre firmwares — a linha que sair correta identifica a config
+     * certa pra esta impressora. FS . desliga o modo CJK antes de tudo.
+     */
     fun build(storeName: String?): ByteArray {
-        val esc = 0x1B
-        val gs = 0x1D
-        val head = byteArrayOf(
-            esc.toByte(), '@'.code.toByte(),            // init
-            esc.toByte(), 't'.code.toByte(), 19,        // codepage 19 = CP858
-            esc.toByte(), 'a'.code.toByte(), 1,         // center
+        var out = byteArrayOf(
+            ESC, '@'.code.toByte(),          // init
+            0x1C, 0x2E,                       // FS . — cancela modo CJK (clonas)
+            ESC, 'a'.code.toByte(), 1,        // center
         )
-        val body = encode(
+        out += ascii(
             buildString {
                 append("VENDA NO ZAP\n")
-                append("Impressão de teste\n")
+                append("Teste de impressora\n")
                 if (!storeName.isNullOrBlank()) append("$storeName\n")
-                append("--------------------------------\n")
-                append("Acentuação: ÁÉÍÓÚ áéíóú ãõ çÇ ê ô\n")
-                append("Impressora conectada com sucesso!\n\n\n\n")
             },
         )
-        val cut = byteArrayOf(gs.toByte(), 'V'.code.toByte(), 66, 0) // partial cut + feed
-        return head + body + cut
+        out += byteArrayOf(ESC, 'a'.code.toByte(), 0) // left
+        out += ascii("--------------------------------\n")
+        out += ascii("Qual linha saiu com acentos\ncertos? Informe no app/suporte:\n\n")
+        out += ascii("[1] ") + escT(19) + encodeWith(CP858, SAMPLE)
+        out += ascii("[2] ") + escT(2) + encodeWith(CP858, SAMPLE)
+        out += ascii("[3] ") + escT(3) + encodeWith(CP860, SAMPLE)
+        out += ascii("\nImpressora conectada!\n\n\n")
+        out += byteArrayOf(GS, 'V'.code.toByte(), 66, 0) // partial cut + feed
+        return out
     }
 }

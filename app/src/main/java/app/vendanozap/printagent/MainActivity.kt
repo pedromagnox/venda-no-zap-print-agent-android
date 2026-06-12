@@ -167,7 +167,6 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
     var tcpHost by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var askAccents by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -183,62 +182,35 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
     }
 
     fun testAndSave(config: PrinterConfig) {
-        busy = true; status = "Imprimindo teste…"
+        busy = true; status = "Identificando impressora…"
         scope.launch {
             try {
-                Printers.print(context, config, TestReceipt.build(prefs.storeName))
+                // Sonda GS I + heurística de nome decidem o modo sozinhas
+                // (análogo Android da detecção por VID do agente Windows).
+                val probe = Printers.probeAndTest(context, config, prefs.storeName)
                 prefs.printer = config
-                AgentState.log("Impressora configurada: ${config.name.ifBlank { config.address }}")
+                prefs.asciiMode = probe.asciiMode
+                AgentState.log(
+                    "Impressora: ${probe.identity ?: config.name.ifBlank { config.address }} → " +
+                        if (probe.asciiMode) "modo sem acentos (genérica)" else "modo normal (CP858)",
+                )
                 // Destrava o gate printerConnectedAt já na configuração.
                 runCatching {
                     app.vendanozap.printagent.service.SyncEngine(context, prefs, ApiClient(context, prefs))
-                        .ensurePrinterReadyReported(config.name, config.type.name.lowercase())
+                        .ensurePrinterReadyReported(
+                            config.name,
+                            config.type.name.lowercase(),
+                            probe.identity,
+                        )
                 }
                 status = null
-                askAccents = true
+                onDone()
             } catch (e: Exception) {
                 status = "Falha no teste: ${e.message}"
             } finally {
                 busy = false
             }
         }
-    }
-
-    if (askAccents) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("Como saiu o cupom?") },
-            text = {
-                Text(
-                    "O teste imprimiu 3 linhas numeradas com acentos " +
-                        "(ÁÉÍÓÚ…). Alguma delas saiu com os acentos corretos?",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    prefs.asciiMode = false
-                    askAccents = false
-                    onDone()
-                }) { Text("Sim, saiu certo") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    // Impressora genérica (GBK fixo): mesmo fallback do agente
-                    // desktop — cupons em texto transliterado, sem acentos.
-                    prefs.asciiMode = true
-                    askAccents = false
-                    AgentState.log("Modo compatibilidade ativado (sem acentos)")
-                    scope.launch {
-                        runCatching {
-                            prefs.printer?.let {
-                                Printers.print(context, it, TestReceipt.buildAscii(prefs.storeName))
-                            }
-                        }
-                        onDone()
-                    }
-                }) { Text("Não, ficou estranho") }
-            },
-        )
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
@@ -344,8 +316,11 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
         Spacer(Modifier.height(12.dp))
         Text(prefs.storeName ?: "Loja", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Text(
-            prefs.printer?.let { "${it.name.ifBlank { it.address }} (${if (it.type == PrinterType.BLUETOOTH) "Bluetooth" else "Rede"})" }
-                ?: "Sem impressora",
+            prefs.printer?.let {
+                val tipo = if (it.type == PrinterType.BLUETOOTH) "Bluetooth" else "Rede"
+                val modo = if (prefs.asciiMode) ", sem acentos" else ""
+                "${it.name.ifBlank { it.address }} ($tipo$modo)"
+            } ?: "Sem impressora",
             fontSize = 13.sp,
         )
         Spacer(Modifier.height(10.dp))
@@ -415,19 +390,6 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
         }
 
         Spacer(Modifier.height(6.dp))
-        var asciiMode by remember { mutableStateOf(prefs.asciiMode) }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Sem acentos (impressora genérica)", fontSize = 13.sp)
-            Spacer(Modifier.weight(1f))
-            Switch(
-                checked = asciiMode,
-                onCheckedChange = { on ->
-                    asciiMode = on
-                    prefs.asciiMode = on
-                    AgentState.log(if (on) "Modo compatibilidade ligado" else "Modo compatibilidade desligado")
-                },
-            )
-        }
         Row {
             TextButton(onClick = onChangePrinter) { Text("Trocar impressora") }
             Spacer(Modifier.weight(1f))

@@ -168,7 +168,11 @@ class SyncEngine(
      * que destrava o gate printerConnectedAt no servidor — sem ele a loja nem
      * enfileira jobs (mesmo comportamento do agente desktop).
      */
-    suspend fun ensurePrinterReadyReported(printerName: String, printerType: String) {
+    suspend fun ensurePrinterReadyReported(
+        printerName: String,
+        printerType: String,
+        printerModel: String? = null,
+    ) {
         if (prefs.printerReadyReported) return
         api.telemetry(
             "printer_state_change",
@@ -176,6 +180,8 @@ class SyncEngine(
                 "printerName" to printerName.ifBlank { "Impressora Android" },
                 "state" to "ready",
                 "printerType" to printerType,
+                // Identidade GS I (ou nome BT): alimenta a base nome→modo da frota.
+                "printerModel" to printerModel,
             ),
         )
         prefs.printerReadyReported = true

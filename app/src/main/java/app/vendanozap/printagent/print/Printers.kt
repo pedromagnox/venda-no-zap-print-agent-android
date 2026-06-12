@@ -16,6 +16,14 @@ import java.util.UUID
 
 class PrinterException(val code: String, message: String) : IOException(message)
 
+/** Resultado da sondagem feita na configuração da impressora. */
+data class ProbeResult(
+    /** true = impressora genérica (GBK fixo): cupons saem transliterados. */
+    val asciiMode: Boolean,
+    /** Identidade respondida via GS I (ou null se a impressora ficou muda). */
+    val identity: String?,
+)
+
 /**
  * Escrita em blocos pequenos com pausa: térmicas Bluetooth baratas têm buffer
  * de poucos KB e descartam o excedente silenciosamente (cupom sai pela metade).
@@ -45,11 +53,88 @@ object Printers {
     suspend fun print(context: Context, config: PrinterConfig, bytes: ByteArray) {
         val payload = withKanjiOff(bytes)
         withContext(Dispatchers.IO) {
-            when (config.type) {
-                PrinterType.BLUETOOTH -> printBluetooth(context, config.address, payload)
-                PrinterType.TCP -> printTcp(config.address, config.port, payload)
+            openConn(context, config).use { conn ->
+                try {
+                    conn.output.writeChunked(payload, conn.chunk, conn.pauseMs)
+                    // Margem pro buffer interno drenar antes do close cortar o link.
+                    Thread.sleep(150)
+                } catch (e: IOException) {
+                    throw PrinterException("WRITE_FAILED", e.message ?: "Falha ao enviar dados")
+                }
             }
         }
+    }
+
+    /**
+     * Sonda + teste numa conexão só (clonas engasgam com reconexão rápida).
+     * Detecção automática do "modo sem acentos", análoga ao VID 28E9 que o
+     * agente Windows usa pra chips genéricos — só que Bluetooth não expõe VID:
+     *  1. nome BT bate padrão de clona conhecida → genérica;
+     *  2. GS I 67 (transmit model name): Epson-compatible de verdade responde;
+     *     silêncio em ~700ms → genérica (conservador: sem acento é legível
+     *     em qualquer impressora; ideograma GBK não é).
+     * Já imprime o cupom de teste no modo decidido.
+     */
+    suspend fun probeAndTest(
+        context: Context,
+        config: PrinterConfig,
+        storeName: String?,
+    ): ProbeResult = withContext(Dispatchers.IO) {
+        openConn(context, config).use { conn ->
+            val nameLooksGeneric = GENERIC_NAME_PATTERNS.any { it.containsMatchIn(config.name) }
+            val identity = gsIdentity(conn)
+            val ascii = nameLooksGeneric || identity.isNullOrBlank()
+            val receipt = if (ascii) TestReceipt.buildAscii(storeName) else TestReceipt.build(storeName)
+            try {
+                conn.output.writeChunked(withKanjiOff(receipt), conn.chunk, conn.pauseMs)
+                Thread.sleep(150)
+            } catch (e: IOException) {
+                throw PrinterException("WRITE_FAILED", e.message ?: "Falha ao enviar dados")
+            }
+            ProbeResult(ascii, identity)
+        }
+    }
+
+    /** Nomes Bluetooth típicos de térmicas genéricas (base inicial; a telemetria da frota alimenta a evolução). */
+    private val GENERIC_NAME_PATTERNS = listOf(
+        Regex("PT-?2\\d{2}", RegexOption.IGNORE_CASE),        // Goojprt PT-210/280
+        Regex("M[PT]T-?(II|2|3)", RegexOption.IGNORE_CASE),   // MTP-II / MPT-3
+        Regex("ZJ-?\\d{2}", RegexOption.IGNORE_CASE),         // Zijiang ZJ-58/80
+        Regex("POS-?\\d{2}", RegexOption.IGNORE_CASE),        // POS58/POS80 genéricas
+        Regex("GOOJPRT", RegexOption.IGNORE_CASE),
+        Regex("^Blue ?tooth ?Printer$", RegexOption.IGNORE_CASE),
+        Regex("^Printer[ _-]?\\d*$", RegexOption.IGNORE_CASE),
+        Regex("^JP-?\\d", RegexOption.IGNORE_CASE),
+    )
+
+    /**
+     * GS I 67 → string de modelo. Lê via available()+poll porque InputStream
+     * de BluetoothSocket não tem timeout nativo. Clonas ignoram o comando em
+     * silêncio (0x1D não imprime), então a sonda não suja o papel.
+     */
+    private fun gsIdentity(conn: Conn): String? = try {
+        conn.output.write(byteArrayOf(0x1D, 0x49, 67))
+        conn.output.flush()
+        val deadline = System.currentTimeMillis() + 700
+        val buf = StringBuilder()
+        while (System.currentTimeMillis() < deadline) {
+            val available = conn.input.available()
+            if (available > 0) {
+                val bytes = ByteArray(available)
+                val read = conn.input.read(bytes)
+                for (i in 0 until read) {
+                    val c = bytes[i].toInt() and 0xFF
+                    if (c in 0x20..0x7E) buf.append(c.toChar())
+                }
+                Thread.sleep(80) // espera curta por resto da resposta
+                if (conn.input.available() == 0) break
+            } else {
+                Thread.sleep(40)
+            }
+        }
+        buf.toString().trim().take(60).ifBlank { null }
+    } catch (_: Exception) {
+        null
     }
 
     /**
@@ -68,47 +153,59 @@ object Printers {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun printBluetooth(context: Context, mac: String, bytes: ByteArray) {
-        val adapter = bluetoothAdapter(context)
-            ?: throw PrinterException("BT_UNAVAILABLE", "Bluetooth indisponível neste aparelho")
-        if (!adapter.isEnabled) throw PrinterException("BT_OFF", "Bluetooth desligado")
-        val device = try {
-            adapter.getRemoteDevice(mac)
-        } catch (e: IllegalArgumentException) {
-            throw PrinterException("BT_BAD_ADDRESS", "Endereço Bluetooth inválido: $mac")
-        }
-        // Impressoras SPP: tenta o socket seguro primeiro, cai pro insecure
-        // (muitas térmicas chinesas não suportam pairing autenticado no RFCOMM).
-        val socket = try {
-            device.createRfcommSocketToServiceRecord(SPP_UUID).apply { connect() }
-        } catch (_: IOException) {
-            try {
-                device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).apply { connect() }
-            } catch (e: IOException) {
-                throw PrinterException("BT_CONNECT_FAILED", e.message ?: "Falha ao conectar na impressora")
-            }
-        }
-        socket.use { s ->
-            try {
-                s.outputStream.writeChunked(bytes)
-                // Margem pro buffer interno drenar antes do close cortar o link.
-                Thread.sleep(150)
-            } catch (e: IOException) {
-                throw PrinterException("BT_WRITE_FAILED", e.message ?: "Falha ao enviar dados")
-            }
-        }
+    private interface Conn : java.io.Closeable {
+        val input: java.io.InputStream
+        val output: OutputStream
+        val chunk: Int
+        val pauseMs: Long
     }
 
-    private fun printTcp(host: String, port: Int, bytes: ByteArray) {
-        try {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(host, port), 5000)
-                socket.soTimeout = 5000
-                socket.getOutputStream().writeChunked(bytes, chunk = 4096, pauseMs = 0)
+    @SuppressLint("MissingPermission")
+    private fun openConn(context: Context, config: PrinterConfig): Conn = when (config.type) {
+        PrinterType.BLUETOOTH -> {
+            val adapter = bluetoothAdapter(context)
+                ?: throw PrinterException("BT_UNAVAILABLE", "Bluetooth indisponível neste aparelho")
+            if (!adapter.isEnabled) throw PrinterException("BT_OFF", "Bluetooth desligado")
+            val device = try {
+                adapter.getRemoteDevice(config.address)
+            } catch (e: IllegalArgumentException) {
+                throw PrinterException("BT_BAD_ADDRESS", "Endereço Bluetooth inválido: ${config.address}")
             }
-        } catch (e: IOException) {
-            throw PrinterException("TCP_FAILED", "${host}:${port} — ${e.message}")
+            // Impressoras SPP: tenta o socket seguro primeiro, cai pro insecure
+            // (muitas térmicas chinesas não suportam pairing autenticado no RFCOMM).
+            val socket = try {
+                device.createRfcommSocketToServiceRecord(SPP_UUID).apply { connect() }
+            } catch (_: IOException) {
+                try {
+                    device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).apply { connect() }
+                } catch (e: IOException) {
+                    throw PrinterException("BT_CONNECT_FAILED", e.message ?: "Falha ao conectar na impressora")
+                }
+            }
+            object : Conn {
+                override val input get() = socket.inputStream
+                override val output get() = socket.outputStream
+                override val chunk = 512
+                override val pauseMs = 25L
+                override fun close() = socket.close()
+            }
+        }
+        PrinterType.TCP -> {
+            val socket = try {
+                Socket().apply {
+                    connect(InetSocketAddress(config.address, config.port), 5000)
+                    soTimeout = 5000
+                }
+            } catch (e: IOException) {
+                throw PrinterException("TCP_FAILED", "${config.address}:${config.port} — ${e.message}")
+            }
+            object : Conn {
+                override val input get() = socket.getInputStream()
+                override val output get() = socket.getOutputStream()
+                override val chunk = 4096
+                override val pauseMs = 0L
+                override fun close() = socket.close()
+            }
         }
     }
 }

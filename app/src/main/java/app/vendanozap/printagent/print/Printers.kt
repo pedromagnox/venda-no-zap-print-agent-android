@@ -193,4 +193,36 @@ object TestReceipt {
         out += byteArrayOf(GS, 'V'.code.toByte(), 66, 0) // partial cut + feed
         return out
     }
+
+    /** Teste do modo compatibilidade: tudo transliterado, sem byte alto. */
+    fun buildAscii(storeName: String?): ByteArray {
+        var out = byteArrayOf(
+            ESC, '@'.code.toByte(),
+            0x1C, 0x2E,
+            ESC, 'a'.code.toByte(), 1,
+        )
+        out += ascii(
+            buildString {
+                append("VENDA NO ZAP\n")
+                append("Modo compatibilidade\n")
+                if (!storeName.isNullOrBlank()) append("$storeName\n")
+            },
+        )
+        out += byteArrayOf(ESC, 'a'.code.toByte(), 0)
+        out += ascii("--------------------------------\n")
+        out += ascii("Acentuacao: AEIOU aeiou ao cC eo\n")
+        out += ascii("Se este cupom saiu legivel, os\npedidos vao imprimir assim.\n\n\n")
+        out += byteArrayOf(GS, 'V'.code.toByte(), 66, 0)
+        return out
+    }
+
+    /**
+     * Cupom a partir do payload.text do backend (fallback do agente desktop
+     * pra impressora genérica): translitera e envolve em ESC/POS mínimo.
+     */
+    fun plainText(text: String): ByteArray =
+        byteArrayOf(ESC, '@'.code.toByte(), 0x1C, 0x2E) +
+            ascii(text) +
+            ascii("\n\n\n") +
+            byteArrayOf(GS, 'V'.code.toByte(), 66, 0)
 }

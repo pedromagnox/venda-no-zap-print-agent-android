@@ -101,6 +101,20 @@ class ApiClient(context: Context, private val prefs: Prefs) {
             ClaimLeaseResponse.serializer(),
         )
 
+    suspend fun listQueue(): QueueListResponse =
+        authedGet("/api/print-queue/", QueueListResponse.serializer())
+
+    /**
+     * Claim individual em modo texto (fallback v1.5 do agente desktop pra
+     * impressoras genéricas): backend devolve payload.text em vez de bytes.
+     */
+    suspend fun claimAscii(queueId: String): ClaimResponse =
+        authedPost(
+            "/api/print-queue/$queueId/claim",
+            """{"mode":"ascii"}""",
+            ClaimResponse.serializer(),
+        )
+
     suspend fun ack(queueId: String, durationMs: Long?) {
         authedPostNoParse(
             "/api/print-queue/$queueId/ack",
@@ -177,18 +191,26 @@ class ApiClient(context: Context, private val prefs: Prefs) {
         json.decodeFromString(deserializer, text)
     }
 
+    private suspend fun <T> authedGet(
+        path: String,
+        deserializer: kotlinx.serialization.DeserializationStrategy<T>,
+    ): T = withContext(Dispatchers.IO) {
+        val text = executeAuthed(path, body = null)
+        json.decodeFromString(deserializer, text)
+    }
+
     private suspend fun authedPostNoParse(path: String, body: String) {
         withContext(Dispatchers.IO) { executeAuthed(path, body) }
     }
 
-    private suspend fun executeAuthed(path: String, body: String): String {
+    private suspend fun executeAuthed(path: String, body: String?): String {
         var attempt = 0
         while (true) {
             val token = validAccessToken()
             val req = Request.Builder()
                 .url("$BASE_URL$path")
                 .header("Authorization", "Bearer $token")
-                .post(body.toRequestBody(jsonMedia))
+                .let { if (body == null) it.get() else it.post(body.toRequestBody(jsonMedia)) }
                 .build()
             http.newCall(req).execute().use { res ->
                 val text = res.body?.string() ?: ""

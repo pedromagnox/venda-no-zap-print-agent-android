@@ -40,6 +40,15 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("printerReadyReported", false)
         set(v) = sp.edit { putBoolean("printerReadyReported", v) }
 
+    /**
+     * Modo compatibilidade: imprime cupom como texto transliterado (sem
+     * acentos). Necessário em térmicas chinesas com GBK fixo no firmware,
+     * que consomem bytes acentuados em pares (vira ideograma) e ignoram FS ".".
+     */
+    var asciiMode: Boolean
+        get() = sp.getBoolean("asciiMode", false)
+        set(v) = sp.edit { putBoolean("asciiMode", v) }
+
     var printer: PrinterConfig?
         get() {
             val type = sp.getString("printer.type", null) ?: return null

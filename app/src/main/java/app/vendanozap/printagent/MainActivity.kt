@@ -167,6 +167,7 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
     var tcpHost by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var askAccents by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -194,13 +195,50 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
                         .ensurePrinterReadyReported(config.name, config.type.name.lowercase())
                 }
                 status = null
-                onDone()
+                askAccents = true
             } catch (e: Exception) {
                 status = "Falha no teste: ${e.message}"
             } finally {
                 busy = false
             }
         }
+    }
+
+    if (askAccents) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Como saiu o cupom?") },
+            text = {
+                Text(
+                    "O teste imprimiu 3 linhas numeradas com acentos " +
+                        "(ÁÉÍÓÚ…). Alguma delas saiu com os acentos corretos?",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.asciiMode = false
+                    askAccents = false
+                    onDone()
+                }) { Text("Sim, saiu certo") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    // Impressora genérica (GBK fixo): mesmo fallback do agente
+                    // desktop — cupons em texto transliterado, sem acentos.
+                    prefs.asciiMode = true
+                    askAccents = false
+                    AgentState.log("Modo compatibilidade ativado (sem acentos)")
+                    scope.launch {
+                        runCatching {
+                            prefs.printer?.let {
+                                Printers.print(context, it, TestReceipt.buildAscii(prefs.storeName))
+                            }
+                        }
+                        onDone()
+                    }
+                }) { Text("Não, ficou estranho") }
+            },
+        )
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
@@ -360,7 +398,11 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
                     busy = true
                     scope.launch {
                         try {
-                            prefs.printer?.let { Printers.print(context, it, TestReceipt.build(prefs.storeName)) }
+                            prefs.printer?.let {
+                                val receipt = if (prefs.asciiMode) TestReceipt.buildAscii(prefs.storeName)
+                                else TestReceipt.build(prefs.storeName)
+                                Printers.print(context, it, receipt)
+                            }
                             AgentState.log("Teste de impressão enviado")
                         } catch (e: Exception) {
                             AgentState.log("Teste falhou: ${e.message}", isError = true)
@@ -373,6 +415,19 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
         }
 
         Spacer(Modifier.height(6.dp))
+        var asciiMode by remember { mutableStateOf(prefs.asciiMode) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Sem acentos (impressora genérica)", fontSize = 13.sp)
+            Spacer(Modifier.weight(1f))
+            Switch(
+                checked = asciiMode,
+                onCheckedChange = { on ->
+                    asciiMode = on
+                    prefs.asciiMode = on
+                    AgentState.log(if (on) "Modo compatibilidade ligado" else "Modo compatibilidade desligado")
+                },
+            )
+        }
         Row {
             TextButton(onClick = onChangePrinter) { Text("Trocar impressora") }
             Spacer(Modifier.weight(1f))

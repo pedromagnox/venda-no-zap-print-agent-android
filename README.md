@@ -46,8 +46,25 @@ APK em `app/build/outputs/apk/`.
 4. **Android Developer Console**: registrar identidade + package name +
    SHA-256 da keystore **antes de setembro/2026** (exigência de developer
    verification pra sideload no Brasil).
-5. **Distribuição**: GitHub Releases + página `/download/android` (mesmo padrão
-   do agente Windows) + in-app updater (não implementado nesta versão).
+5. **Distribuição** (implementado — falta só criar o repo + 1ª release):
+   - **Worker**: `/download/android` (landing com instruções de sideload),
+     `/download/android/apk` (302 pro APK da release latest) e
+     `/download/android/latest.json` (metadados que o updater lê). Resolve o
+     repo `pedromagnox/venda-no-zap-print-agent-android` via GitHub API, cache
+     de 10min na borda — mesmo padrão do `/download/print-agent`.
+   - **In-app updater** (`update/Updater.kt`): checa o `latest.json` ao abrir a
+     tela (evento, sem timer), e se houver `versionCode` maior mostra banner
+     "Atualizar agora" → baixa o APK pro cache → abre o instalador do sistema
+     (FileProvider). Iniciado pelo usuário, isolado do caminho de impressão.
+   - **Convenção de release** (o worker depende dela): tag = `versionName`
+     (ex.: `v0.1.4`) e UM asset `.apk` com o `versionCode` no fim do nome
+     (ex.: `print-agent-5.apk`). Publicar com:
+     ```powershell
+     gh release create v0.1.4 app\build\outputs\apk\release\print-agent-5.apk
+     ```
+   - Pré-requisito: repo GitHub **público** (o redirect pro `browser_download_url`
+     só funciona unauth se for público, igual ao agente Windows) + keystore de
+     release (item 3) pra assinar o APK distribuído.
 
 ## Teste físico
 

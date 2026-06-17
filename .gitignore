@@ -5,6 +5,7 @@ google-services.json
 *firebase-adminsdk*.json
 *.keystore
 *.jks
+keystore.properties
 .idea/
 captures/
 .externalNativeBuild/

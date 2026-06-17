@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,6 +15,15 @@ if (hasGoogleServices) {
     apply(plugin = "com.google.gms.google-services")
 }
 
+// Assinatura de release: lê keystore.properties (gitignored, fora do repo). Sem
+// ele a release sai sem assinar (fresh clone ainda builda). A MESMA keystore tem
+// que assinar TODA release — senão o updater não consegue atualizar por cima
+// (Android recusa update com chave diferente).
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) FileInputStream(keystorePropsFile).use { load(it) }
+}
+
 android {
     namespace = "app.vendanozap.printagent"
     compileSdk = 34
@@ -24,14 +36,27 @@ android {
         versionName = "0.1.4"
     }
 
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // minify/shrink desligados de propósito: a release se comporta igual
+            // ao debug já verificado — sem risco do R8 remover serializers
+            // (kotlinx.serialization) ou reflection. Tamanho do APK é irrelevante.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 

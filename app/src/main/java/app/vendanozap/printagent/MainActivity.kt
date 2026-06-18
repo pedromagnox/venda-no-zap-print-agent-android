@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -33,6 +34,7 @@ import app.vendanozap.printagent.core.AgentState
 import app.vendanozap.printagent.core.Prefs
 import app.vendanozap.printagent.core.PrinterConfig
 import app.vendanozap.printagent.core.PrinterType
+import app.vendanozap.printagent.core.Support
 import app.vendanozap.printagent.net.ApiClient
 import app.vendanozap.printagent.net.UnpairedException
 import app.vendanozap.printagent.print.Printers
@@ -107,20 +109,60 @@ private fun PairingScreen(prefs: Prefs, onDone: () -> Unit) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text("Venda no Zap", color = Laranja, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Print Agent", fontSize = 20.sp)
-        Spacer(Modifier.height(24.dp))
-        Text(
-            "No painel da sua loja, abra Impressão → Print Agent e copie o código de pareamento.",
-            fontSize = 14.sp,
-        )
         Spacer(Modifier.height(16.dp))
+        Text("Conectar à sua loja", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text("Cole abaixo o token gerado no Venda no Zap", fontSize = 14.sp)
+        Spacer(Modifier.height(10.dp))
+        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0))) {
+            Column(Modifier.padding(12.dp)) {
+                Text("DICA", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Laranja)
+                Text(
+                    "fica abaixo do botão que você usou para baixar esse aplicativo",
+                    fontSize = 13.sp,
+                )
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        Text("Token de conexão", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(4.dp))
         OutlinedTextField(
             value = token,
-            onValueChange = { token = it.trim() },
-            label = { Text("Código de pareamento (vnzpa_…)") },
+            onValueChange = {}, // ninguém digita um token desses — só Colar preenche
+            readOnly = true, // input bloqueado pro teclado
+            placeholder = { Text("Cole o token aqui") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            textStyle = LocalTextStyle.current.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+            ),
         )
+        Spacer(Modifier.height(8.dp))
+        Row {
+            Button(
+                onClick = {
+                    val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
+                        ?.primaryClip
+                    val pasted = clip?.takeIf { it.itemCount > 0 }
+                        ?.getItemAt(0)?.text?.toString()?.trim()
+                    if (!pasted.isNullOrBlank()) {
+                        token = pasted; error = null
+                    } else {
+                        error = "Nada para colar — copie o token no painel primeiro."
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Colar") }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(
+                onClick = { token = ""; error = null },
+                enabled = token.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) { Text("Limpar") }
+        }
+
         error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
@@ -154,7 +196,7 @@ private fun PairingScreen(prefs: Prefs, onDone: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Text("Parear")
+            else Text("Conectar")
         }
     }
 }
@@ -493,7 +535,13 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Text("Atividade", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Atividade", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { Support.openSupport(context, prefs, log) }) {
+                Text("Enviar logs ao suporte", fontSize = 13.sp)
+            }
+        }
         LazyColumn(modifier = Modifier.weight(1f)) {
             items(log) { entry ->
                 Text(

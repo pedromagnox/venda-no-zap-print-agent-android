@@ -31,13 +31,23 @@ object AgentState {
     private val _needsRepair = MutableStateFlow(false)
     val needsRepair: StateFlow<Boolean> = _needsRepair
 
+    // Sink de persistência (LogStore). Configurado no App.onCreate; cada log novo
+    // também é gravado no arquivo. Igual ao setLogSink do agente desktop.
+    private var logSink: ((LogEntry) -> Unit)? = null
+
     fun setServiceRunning(running: Boolean) { _serviceRunning.value = running }
     fun markSync() { _lastSyncAt.value = System.currentTimeMillis() }
     fun incrementPrinted() { _printedCount.value += 1 }
     fun setNeedsRepair(v: Boolean) { _needsRepair.value = v }
 
+    fun setLogSink(sink: (LogEntry) -> Unit) { logSink = sink }
+
+    /** Carrega os logs persistidos na UI no boot (mais recentes primeiro). */
+    fun seedLogs(entries: List<LogEntry>) { _log.value = entries.take(80) }
+
     fun log(message: String, isError: Boolean = false) {
         val entry = LogEntry(System.currentTimeMillis(), message, isError)
         _log.value = (listOf(entry) + _log.value).take(80)
+        logSink?.invoke(entry)
     }
 }

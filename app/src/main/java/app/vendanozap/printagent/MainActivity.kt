@@ -2,6 +2,8 @@ package app.vendanozap.printagent
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothClass
+import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -169,6 +171,8 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
     var tcpHost by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var showAllDevices by remember { mutableStateOf(false) }
+    var showNetwork by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -231,8 +235,11 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
             }
         }
 
+        val visible = if (showAllDevices) bonded else bonded.filter { it.likelyPrinter }
+        val hiddenCount = bonded.size - bonded.count { it.likelyPrinter }
+
         LazyColumn(modifier = Modifier.weight(1f)) {
-            items(bonded) { (name, mac) ->
+            items(visible) { (name, mac) ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     onClick = {
@@ -245,25 +252,58 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
                     }
                 }
             }
+            if (visible.isEmpty()) {
+                item {
+                    Text(
+                        if (bonded.isEmpty())
+                            "Nenhum dispositivo pareado. Pareie a impressora no Bluetooth do Android e volte."
+                        else
+                            "Nenhuma impressora reconhecida. Se a sua não apareceu, toque em \"Mostrar todos\".",
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                }
+            }
+        }
+
+        if (hiddenCount > 0 || showAllDevices) {
+            TextButton(onClick = { showAllDevices = !showAllDevices }) {
+                Text(
+                    if (showAllDevices) "Mostrar só impressoras"
+                    else "Mostrar todos os dispositivos ($hiddenCount ocultos)",
+                    fontSize = 13.sp,
+                )
+            }
         }
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        Text("Ou impressora de rede (TCP 9100):", fontSize = 13.sp)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = tcpHost,
-                onValueChange = { tcpHost = it.trim() },
-                label = { Text("IP (ex.: 192.168.0.50)") },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
+
+        // Rede TCP escondida como avançado: a maioria usa Bluetooth; expor o
+        // campo de IP direto só confunde o lojista.
+        TextButton(onClick = { showNetwork = !showNetwork }) {
+            Text(
+                if (showNetwork) "Ocultar impressora de rede" else "Impressora de rede (avançado)",
+                fontSize = 13.sp,
             )
-            Spacer(Modifier.width(8.dp))
-            Button(
-                onClick = {
-                    if (!busy) testAndSave(PrinterConfig(PrinterType.TCP, tcpHost, name = "Rede $tcpHost"))
-                },
-                enabled = tcpHost.isNotBlank() && !busy,
-            ) { Text("Testar") }
+        }
+        if (showNetwork) {
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = tcpHost,
+                    onValueChange = { tcpHost = it.trim() },
+                    label = { Text("IP (ex.: 192.168.0.50)") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        if (!busy) testAndSave(PrinterConfig(PrinterType.TCP, tcpHost, name = "Rede $tcpHost"))
+                    },
+                    enabled = tcpHost.isNotBlank() && !busy,
+                ) { Text("Testar") }
+            }
         }
         status?.let {
             Spacer(Modifier.height(8.dp))
@@ -273,15 +313,39 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
     }
 }
 
+private data class BondedDevice(val name: String, val mac: String, val likelyPrinter: Boolean)
+
 @SuppressLint("MissingPermission")
-private fun listBonded(context: Context, hasPermission: Boolean): List<Pair<String, String>> {
+private fun listBonded(context: Context, hasPermission: Boolean): List<BondedDevice> {
     if (Build.VERSION.SDK_INT >= 31 && !hasPermission) return emptyList()
     val adapter = Printers.bluetoothAdapter(context) ?: return emptyList()
     return try {
-        adapter.bondedDevices.map { (it.name ?: "Dispositivo") to it.address }
+        adapter.bondedDevices.map {
+            BondedDevice(it.name ?: "Dispositivo", it.address, isLikelyPrinter(it))
+        }
     } catch (_: SecurityException) {
         emptyList()
     }
+}
+
+// Classes de dispositivo BT que NUNCA são impressora térmica (fone/caixa,
+// teclado/mouse, telefone, relógio…). Filtra por EXCLUSÃO — não por "só
+// IMAGING" — porque térmica chinesa barata costuma reportar classe genérica/
+// Uncategorized; excluir só o que com certeza não é impressora evita esconder
+// uma de verdade (e o botão "Mostrar todos" é a saída se ainda assim filtrar mal).
+private val NON_PRINTER_MAJORS = setOf(
+    BluetoothClass.Device.Major.AUDIO_VIDEO,
+    BluetoothClass.Device.Major.PERIPHERAL,
+    BluetoothClass.Device.Major.PHONE,
+    BluetoothClass.Device.Major.WEARABLE,
+    BluetoothClass.Device.Major.HEALTH,
+    BluetoothClass.Device.Major.TOY,
+)
+
+@SuppressLint("MissingPermission")
+private fun isLikelyPrinter(device: BluetoothDevice): Boolean {
+    val major = device.bluetoothClass?.majorDeviceClass ?: return true
+    return major !in NON_PRINTER_MAJORS
 }
 
 private fun hasBluetoothPermission(context: Context): Boolean =

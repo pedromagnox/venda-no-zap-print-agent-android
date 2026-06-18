@@ -422,6 +422,10 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
     }
     // Checa atualização ao abrir a tela (evento, sem timer). Best-effort.
     LaunchedEffect(Unit) { update = Updater.check() }
+    // Garante o serviço de fundo ligado quando o agente está configurado: o sync
+    // do "app aberto" pode ter rodado antes do 1º pareamento/escolha de impressora
+    // (setup feito na mesma sessão), deixando o serviço parado até reabrir o app.
+    LaunchedEffect(Unit) { AgentForegroundService.sync(context, "status_opened") }
 
     Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
         Spacer(Modifier.height(12.dp))

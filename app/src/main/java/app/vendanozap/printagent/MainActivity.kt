@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,6 +51,7 @@ private val Laranja = Color(0xFFF47527)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val prefs = Prefs(this)
         setContent {
             MaterialTheme(
@@ -59,7 +61,9 @@ class MainActivity : ComponentActivity() {
                 ),
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    Root(prefs)
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                        Root(prefs)
+                    }
                 }
             }
         }

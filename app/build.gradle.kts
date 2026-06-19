@@ -29,7 +29,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "app.vendanozap.printagent"
+        applicationId = "app.vendanozap"
         minSdk = 26
         targetSdk = 34
         versionCode = 9

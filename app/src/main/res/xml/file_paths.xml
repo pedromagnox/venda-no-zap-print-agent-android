@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<paths>
-    <!-- APK baixado pelo updater fica em cacheDir/updates e é entregue ao
-         instalador do sistema via FileProvider. -->
-    <cache-path name="updates" path="updates/" />
-</paths>

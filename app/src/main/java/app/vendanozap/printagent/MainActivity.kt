@@ -40,8 +40,6 @@ import app.vendanozap.printagent.net.UnpairedException
 import app.vendanozap.printagent.print.Printers
 import app.vendanozap.printagent.print.TestReceipt
 import app.vendanozap.printagent.service.AgentForegroundService
-import app.vendanozap.printagent.update.AndroidLatest
-import app.vendanozap.printagent.update.Updater
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -407,7 +405,6 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
     val log by AgentState.log.collectAsState()
     val needsRepair by AgentState.needsRepair.collectAsState()
     var busy by remember { mutableStateOf(false) }
-    var update by remember { mutableStateOf<AndroidLatest?>(null) }
 
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -420,8 +417,6 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
-    // Checa atualização ao abrir a tela (evento, sem timer). Best-effort.
-    LaunchedEffect(Unit) { update = Updater.check() }
     // Garante o serviço de fundo ligado quando o agente está configurado: o sync
     // do "app aberto" pode ter rodado antes do 1º pareamento/escolha de impressora
     // (setup feito na mesma sessão), deixando o serviço parado até reabrir o app.
@@ -446,33 +441,6 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
                     Text("Pareamento inválido", fontWeight = FontWeight.Bold)
                     Text("Gere um novo código no painel e pareie de novo.", fontSize = 13.sp)
                     TextButton(onClick = { prefs.clearPairing(); onRepair() }) { Text("Re-parear") }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        update?.let { upd ->
-            var updating by remember { mutableStateOf(false) }
-            var updError by remember { mutableStateOf<String?>(null) }
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0))) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("Atualização disponível", fontWeight = FontWeight.Bold)
-                    Text("Versão ${upd.versionName} — recomendado atualizar.", fontSize = 13.sp)
-                    updError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-                    TextButton(
-                        enabled = !updating,
-                        onClick = {
-                            updating = true; updError = null
-                            scope.launch {
-                                try {
-                                    val apk = Updater.download(context, upd)
-                                    Updater.install(context, apk)
-                                } catch (e: Exception) {
-                                    updError = "Falha ao baixar: ${e.message}"
-                                } finally { updating = false }
-                            }
-                        },
-                    ) { Text(if (updating) "Baixando…" else "Atualizar agora") }
                 }
             }
             Spacer(Modifier.height(8.dp))

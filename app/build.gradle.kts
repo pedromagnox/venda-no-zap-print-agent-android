@@ -26,14 +26,14 @@ val keystoreProps = Properties().apply {
 
 android {
     namespace = "app.vendanozap.printagent"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "app.vendanozap"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 9
-        versionName = "0.1.8"
+        targetSdk = 35
+        versionCode = 10
+        versionName = "0.1.9"
     }
 
     signingConfigs {

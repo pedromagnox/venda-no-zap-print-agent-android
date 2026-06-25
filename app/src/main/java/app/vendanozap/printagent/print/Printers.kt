@@ -2,7 +2,9 @@ package app.vendanozap.printagent.print
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothSocket
 import android.content.Context
 import app.vendanozap.printagent.core.PrinterConfig
 import app.vendanozap.printagent.core.PrinterType
@@ -171,17 +173,7 @@ object Printers {
             } catch (e: IllegalArgumentException) {
                 throw PrinterException("BT_BAD_ADDRESS", "Endereço Bluetooth inválido: ${config.address}")
             }
-            // Impressoras SPP: tenta o socket seguro primeiro, cai pro insecure
-            // (muitas térmicas chinesas não suportam pairing autenticado no RFCOMM).
-            val socket = try {
-                device.createRfcommSocketToServiceRecord(SPP_UUID).apply { connect() }
-            } catch (_: IOException) {
-                try {
-                    device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).apply { connect() }
-                } catch (e: IOException) {
-                    throw PrinterException("BT_CONNECT_FAILED", e.message ?: "Falha ao conectar na impressora")
-                }
-            }
+            val socket = connectRfcomm(adapter, device)
             object : Conn {
                 override val input get() = socket.inputStream
                 override val output get() = socket.outputStream
@@ -208,6 +200,47 @@ object Printers {
             }
         }
     }
+
+    /**
+     * Conecta no RFCOMM da térmica tentando estratégias em ordem. Clonas baratas
+     * (MPT-II, PT-2xx, ZJ…) NÃO expõem o SDP do SPP e morrem no caminho padrão com
+     * "read failed, socket might closed or timeout, read ret: -1". Ordem:
+     *   1. cancelDiscovery() — discovery em curso mata o connect.
+     *   2. SPP seguro (SDP) → 3. SPP inseguro (SDP) → 4. canal 1 direto via
+     *      reflexão (createRfcommSocket), que PULA o SDP que essas clonas não têm.
+     * Fecha o socket a cada falha; uma 2ª rodada (com pausa) cobre o caso "1ª
+     * conexão ok, reconexão falha" típico dessas impressoras. A reflexão pode ser
+     * barrada por hidden-API em Android novo — aí simplesmente cai fora (não piora).
+     */
+    @SuppressLint("MissingPermission")
+    private fun connectRfcomm(adapter: BluetoothAdapter, device: BluetoothDevice): BluetoothSocket {
+        var lastError: Exception? = null
+        repeat(2) { attempt ->
+            runCatching { adapter.cancelDiscovery() }
+            for (makeSocket in rfcommStrategies(device)) {
+                val socket = runCatching { makeSocket() }.getOrNull() ?: continue
+                try {
+                    socket.connect()
+                    return socket
+                } catch (e: Exception) {
+                    lastError = e
+                    runCatching { socket.close() }
+                }
+            }
+            if (attempt == 0) Thread.sleep(400)
+        }
+        throw PrinterException("BT_CONNECT_FAILED", lastError?.message ?: "Falha ao conectar na impressora")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun rfcommStrategies(device: BluetoothDevice): List<() -> BluetoothSocket> = listOf(
+        { device.createRfcommSocketToServiceRecord(SPP_UUID) },
+        { device.createInsecureRfcommSocketToServiceRecord(SPP_UUID) },
+        {
+            device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                .invoke(device, 1) as BluetoothSocket
+        },
+    )
 }
 
 /**

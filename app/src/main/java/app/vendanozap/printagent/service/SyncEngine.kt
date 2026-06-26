@@ -64,7 +64,7 @@ class SyncEngine(
                             ),
                         )
                     } catch (e: PrinterException) {
-                        AgentState.log("Falha na impressora: ${e.code} ${e.message}", isError = true)
+                        AgentState.log("Pedido não impresso: ${e.message}", isError = true)
                         api.release(item.id, e.code, e.message)
                         api.telemetry(
                             "print_failure",
@@ -140,7 +140,7 @@ class SyncEngine(
                         ),
                     )
                 } catch (e: PrinterException) {
-                    AgentState.log("Falha na impressora: ${e.code} ${e.message}", isError = true)
+                    AgentState.log("Pedido não impresso: ${e.message}", isError = true)
                     api.release(item.id, e.code, e.message)
                     api.telemetry(
                         "print_failure",

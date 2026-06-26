@@ -201,6 +201,14 @@ object Printers {
         }
     }
 
+    // Cada socket.connect() é limitado por ATTEMPT, e a rotina toda por OVERALL.
+    // socket.connect() pode pendurar (clone que não responde) e não tem timeout
+    // nativo. Bound garante: (a) falha rápida e previsível, dentro do lease de
+    // 2min do servidor (sem 409 por lease expirado); (b) o botão Teste nunca fica
+    // preso. Conexão legítima resolve em poucos segundos, bem abaixo do limite.
+    private const val CONNECT_ATTEMPT_TIMEOUT_MS = 12_000L
+    private const val CONNECT_OVERALL_TIMEOUT_MS = 40_000L
+
     /**
      * Conecta no RFCOMM da térmica tentando estratégias em ordem. Clonas baratas
      * (MPT-II, PT-2xx, ZJ…) NÃO expõem o SDP do SPP e morrem no caminho padrão com
@@ -211,25 +219,48 @@ object Printers {
      * Fecha o socket a cada falha; uma 2ª rodada (com pausa) cobre o caso "1ª
      * conexão ok, reconexão falha" típico dessas impressoras. A reflexão pode ser
      * barrada por hidden-API em Android novo — aí simplesmente cai fora (não piora).
+     * Mensagem de erro é amigável ("fora de alcance ou desligada"): o "read ret -1"
+     * cru não diz nada pro lojista, e a causa real é sempre alcance/energia.
      */
     @SuppressLint("MissingPermission")
     private fun connectRfcomm(adapter: BluetoothAdapter, device: BluetoothDevice): BluetoothSocket {
-        var lastError: Exception? = null
+        val deadline = System.currentTimeMillis() + CONNECT_OVERALL_TIMEOUT_MS
         repeat(2) { attempt ->
             runCatching { adapter.cancelDiscovery() }
             for (makeSocket in rfcommStrategies(device)) {
+                if (System.currentTimeMillis() >= deadline) {
+                    throw PrinterException("BT_CONNECT_FAILED", "Impressora fora de alcance ou desligada")
+                }
                 val socket = runCatching { makeSocket() }.getOrNull() ?: continue
                 try {
-                    socket.connect()
+                    connectWithTimeout(socket, CONNECT_ATTEMPT_TIMEOUT_MS)
                     return socket
                 } catch (e: Exception) {
-                    lastError = e
                     runCatching { socket.close() }
                 }
             }
             if (attempt == 0) Thread.sleep(400)
         }
-        throw PrinterException("BT_CONNECT_FAILED", lastError?.message ?: "Falha ao conectar na impressora")
+        throw PrinterException("BT_CONNECT_FAILED", "Impressora fora de alcance ou desligada")
+    }
+
+    /**
+     * BluetoothSocket.connect() não aceita timeout e pode bloquear por minutos num
+     * clone que não responde. Roda o connect numa thread; se passar do prazo, fecha
+     * o socket (o que desbloqueia o connect pendurado com IOException) e desiste.
+     */
+    private fun connectWithTimeout(socket: BluetoothSocket, timeoutMs: Long) {
+        var err: Exception? = null
+        val t = Thread {
+            try { socket.connect() } catch (e: Exception) { err = e }
+        }.apply { isDaemon = true; start() }
+        t.join(timeoutMs)
+        if (t.isAlive) {
+            runCatching { socket.close() } // desbloqueia o connect pendurado
+            t.join(1_000)
+            throw IOException("connect timeout")
+        }
+        err?.let { throw it }
     }
 
     @SuppressLint("MissingPermission")

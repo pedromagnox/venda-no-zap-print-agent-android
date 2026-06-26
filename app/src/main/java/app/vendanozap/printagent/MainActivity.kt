@@ -500,7 +500,15 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
                 },
                 enabled = !busy,
                 modifier = Modifier.weight(1f),
-            ) { Text("Teste") }
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Testando…")
+                } else {
+                    Text("Teste")
+                }
+            }
         }
 
         Spacer(Modifier.height(6.dp))

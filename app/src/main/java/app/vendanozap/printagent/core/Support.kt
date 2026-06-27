@@ -26,8 +26,9 @@ object Support {
         prefs.storeName?.takeIf { it.isNotBlank() }?.let { sb.append("Loja: $it\n") }
         prefs.printer?.let {
             val tipo = it.type.name.lowercase()
-            val modo = if (prefs.asciiMode) ", sem acentos" else ""
-            sb.append("Impressora: ${it.name.ifBlank { it.address }} ($tipo$modo)\n")
+            sb.append("Impressora: ${it.name.ifBlank { it.address }} ($tipo)\n")
+            val m = prefs.printerMode
+            sb.append("Modo de impressão: ${m.label} (${m.wire})\n")
         }
         sb.append("Data: ${SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale("pt", "BR")).format(Date())}\n\n")
         sb.append("— Logs recentes —\n")

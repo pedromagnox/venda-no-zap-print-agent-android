@@ -94,10 +94,10 @@ class ApiClient(context: Context, private val prefs: Prefs) {
 
     // ---------- Fila ----------
 
-    suspend fun claimLease(max: Int = 5): ClaimLeaseResponse =
+    suspend fun claimLease(max: Int = 5, mode: String? = null): ClaimLeaseResponse =
         authedPost(
             "/api/print-queue/claim-lease",
-            json.encodeToString(ClaimLeaseRequest.serializer(), ClaimLeaseRequest(max)),
+            json.encodeToString(ClaimLeaseRequest.serializer(), ClaimLeaseRequest(max, mode)),
             ClaimLeaseResponse.serializer(),
         )
 
@@ -105,15 +105,18 @@ class ApiClient(context: Context, private val prefs: Prefs) {
         authedGet("/api/print-queue/", QueueListResponse.serializer())
 
     /**
-     * Claim individual em modo texto (fallback v1.5 do agente desktop pra
-     * impressoras genéricas): backend devolve payload.text em vez de bytes.
+     * Cupom de TESTE renderizado pelo servidor no modo pedido (escpos/raster/
+     * ascii). O raster só é renderizável no servidor — então o teste de todos
+     * os modos vem pronto em bytes e o app só repassa RAW. Usado pelo wizard.
      */
-    suspend fun claimAscii(queueId: String): ClaimResponse =
-        authedPost(
-            "/api/print-queue/$queueId/claim",
-            """{"mode":"ascii"}""",
-            ClaimResponse.serializer(),
+    suspend fun testReceipt(mode: String): ByteArray {
+        val res = authedPost(
+            "/api/print-queue/test-receipt",
+            """{"mode":"$mode"}""",
+            TestReceiptResponse.serializer(),
         )
+        return android.util.Base64.decode(res.bytesBase64, android.util.Base64.DEFAULT)
+    }
 
     suspend fun ack(queueId: String, durationMs: Long?) {
         authedPostNoParse(

@@ -7,6 +7,24 @@ import androidx.core.content.edit
 /** Tipo de conexão com a impressora térmica. */
 enum class PrinterType { BLUETOOTH, TCP }
 
+/**
+ * Modo de impressão, escolhido no teste guiado do onboarding. Do mais rápido
+ * pro mais compatível. O modo vai em TODO claim → o servidor monta os bytes
+ * nesse formato e o app só repassa RAW (não renderiza nada localmente).
+ */
+enum class PrinterMode(val wire: String, val label: String) {
+    /** ESC/POS texto, CP850. Rápido, usa a fonte da impressora. */
+    ESCPOS("escpos", "Texto"),
+    /** Cupom como imagem (GS v 0, glifos do servidor). Acento sempre certo. */
+    RASTER("raster", "Imagem"),
+    /** Texto transliterado, sem acento. Pra impressora muito básica. */
+    ASCII("ascii", "Simples");
+
+    companion object {
+        fun fromWire(w: String?): PrinterMode = values().firstOrNull { it.wire == w } ?: ESCPOS
+    }
+}
+
 data class PrinterConfig(
     val type: PrinterType,
     /** MAC do dispositivo Bluetooth pareado, ou host/IP no caso TCP. */
@@ -41,13 +59,17 @@ class Prefs(context: Context) {
         set(v) = sp.edit { putBoolean("printerReadyReported", v) }
 
     /**
-     * Modo compatibilidade: imprime cupom como texto transliterado (sem
-     * acentos). Necessário em térmicas chinesas com GBK fixo no firmware,
-     * que consomem bytes acentuados em pares (vira ideograma) e ignoram FS ".".
+     * Modo de impressão escolhido no teste guiado. Migra instalações pré-wizard:
+     * quem tinha o antigo "Imprimir sem acentos" (asciiMode=true) vira ASCII;
+     * o resto começa em ESCPOS (e o wizard ajusta se o acento sair errado).
      */
-    var asciiMode: Boolean
-        get() = sp.getBoolean("asciiMode", false)
-        set(v) = sp.edit { putBoolean("asciiMode", v) }
+    var printerMode: PrinterMode
+        get() {
+            val stored = sp.getString("printerMode", null)
+            if (stored != null) return PrinterMode.fromWire(stored)
+            return if (sp.getBoolean("asciiMode", false)) PrinterMode.ASCII else PrinterMode.ESCPOS
+        }
+        set(v) = sp.edit { putString("printerMode", v.wire) }
 
     var printer: PrinterConfig?
         get() {

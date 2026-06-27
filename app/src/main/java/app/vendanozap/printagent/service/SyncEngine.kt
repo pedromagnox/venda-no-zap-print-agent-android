@@ -4,13 +4,10 @@ import android.content.Context
 import android.util.Base64
 import app.vendanozap.printagent.core.AgentState
 import app.vendanozap.printagent.core.Prefs
-import app.vendanozap.printagent.core.PrinterConfig
 import app.vendanozap.printagent.net.ApiClient
-import app.vendanozap.printagent.net.ApiException
 import app.vendanozap.printagent.net.UnpairedException
 import app.vendanozap.printagent.print.PrinterException
 import app.vendanozap.printagent.print.Printers
-import app.vendanozap.printagent.print.TestReceipt
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -34,10 +31,10 @@ class SyncEngine(
             return -1
         }
         var printed = 0
+        val mode = prefs.printerMode
         try {
-            if (prefs.asciiMode) return drainAscii(trigger, printer)
             while (true) {
-                val batch = api.claimLease(max = 5).items
+                val batch = api.claimLease(max = 5, mode = mode.wire).items
                 if (batch.isEmpty()) break
                 for (item in batch) {
                     val startedAt = System.currentTimeMillis()
@@ -62,6 +59,7 @@ class SyncEngine(
                                 "attempts" to item.attempts,
                                 "printerType" to printer.type.name.lowercase(),
                                 "printerHost" to printer.address,
+                                "printMode" to mode.wire,
                                 "agentVersion" to "android",
                             ),
                         )
@@ -80,6 +78,7 @@ class SyncEngine(
                                 "attempts" to item.attempts,
                                 "printerType" to printer.type.name.lowercase(),
                                 "printerHost" to printer.address,
+                                "printMode" to mode.wire,
                             ),
                         )
                         // Impressora indisponível: devolve o lote e para — o
@@ -101,79 +100,6 @@ class SyncEngine(
     }
 
     /**
-     * Fluxo do modo compatibilidade (impressora genérica/GBK): mesmo fallback
-     * v1.5 do agente desktop — claim individual com mode:"ascii", backend
-     * devolve o cupom como texto; o app translitera e imprime sem byte alto.
-     */
-    private suspend fun drainAscii(trigger: String, printer: PrinterConfig): Int {
-        var printed = 0
-        while (true) {
-            val pending = api.listQueue().items.filter { it.status == "pending" }
-            if (pending.isEmpty()) break
-            var progressed = false
-            for (item in pending) {
-                val startedAt = System.currentTimeMillis()
-                val claim = try {
-                    api.claimAscii(item.id)
-                } catch (e: ApiException) {
-                    // 409 = lease de outro agente; 404 = item já processado.
-                    if (e.code == 409 || e.code == 404) continue
-                    throw e
-                }
-                val text = claim.payload?.text
-                if (text == null) {
-                    api.release(item.id, "NO_PAYLOAD", "payload.text ausente", retry = false)
-                    continue
-                }
-                try {
-                    Printers.print(context, printer, TestReceipt.plainText(text))
-                    api.ack(item.id, System.currentTimeMillis() - startedAt)
-                    AgentState.setPrinterOk()
-                    Alerts.clearPrintFailed(context)
-                    ensurePrinterReadyReported(printer.name, printer.type.name.lowercase())
-                    printed++
-                    progressed = true
-                    AgentState.incrementPrinted()
-                    AgentState.log("Pedido impresso (#${item.orderId.takeLast(6)}, compat)")
-                    api.telemetry(
-                        "print_success",
-                        mapOf(
-                            "queueId" to item.id,
-                            "reason" to item.reason,
-                            "durationMs" to (System.currentTimeMillis() - startedAt),
-                            "attempts" to item.attempts,
-                            "printerType" to printer.type.name.lowercase(),
-                            "printerHost" to printer.address,
-                        ),
-                    )
-                } catch (e: PrinterException) {
-                    val failMsg = e.message ?: "Impressora fora de alcance ou desligada"
-                    AgentState.log("Pedido não impresso: $failMsg", isError = true)
-                    AgentState.setPrinterFailed(failMsg)
-                    Alerts.printFailed(context, failMsg)
-                    api.release(item.id, e.code, e.message)
-                    api.telemetry(
-                        "print_failure",
-                        mapOf(
-                            "queueId" to item.id,
-                            "errorCode" to e.code,
-                            "errorMessage" to e.message,
-                            "printerType" to printer.type.name.lowercase(),
-                            "printerHost" to printer.address,
-                        ),
-                    )
-                    return printed
-                }
-            }
-            // Nada avançou = restante está em lease alheio; evita loop infinito.
-            if (!progressed) break
-        }
-        AgentState.markSync()
-        api.ping()
-        return printed
-    }
-
-    /**
      * Emite printer_state_change(ready) UMA vez por pareamento. É esse evento
      * que destrava o gate printerConnectedAt no servidor — sem ele a loja nem
      * enfileira jobs (mesmo comportamento do agente desktop).
@@ -190,6 +116,7 @@ class SyncEngine(
                 "printerName" to printerName.ifBlank { "Impressora Android" },
                 "state" to "ready",
                 "printerType" to printerType,
+                "printMode" to prefs.printerMode.wire,
                 // Identidade GS I (ou nome BT): alimenta a base nome→modo da frota.
                 "printerModel" to printerModel,
             ),

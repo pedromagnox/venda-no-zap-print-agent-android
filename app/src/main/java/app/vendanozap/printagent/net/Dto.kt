@@ -24,7 +24,14 @@ data class ExchangeResponse(
 )
 
 @Serializable
-data class ClaimLeaseRequest(val max: Int = 5)
+data class ClaimLeaseRequest(val max: Int = 5, val mode: String? = null)
+
+@Serializable
+data class TestReceiptResponse(
+    val mode: String? = null,
+    val paperWidth: String? = null,
+    val bytesBase64: String,
+)
 
 @Serializable
 data class QueueItem(

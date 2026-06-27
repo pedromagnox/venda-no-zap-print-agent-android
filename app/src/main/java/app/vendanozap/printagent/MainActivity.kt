@@ -34,13 +34,15 @@ import androidx.core.content.ContextCompat
 import app.vendanozap.printagent.core.AgentState
 import app.vendanozap.printagent.core.Prefs
 import app.vendanozap.printagent.core.PrinterConfig
+import app.vendanozap.printagent.core.PrinterMode
 import app.vendanozap.printagent.core.PrinterType
 import app.vendanozap.printagent.core.Support
 import app.vendanozap.printagent.net.ApiClient
 import app.vendanozap.printagent.net.UnpairedException
+import app.vendanozap.printagent.print.PrinterException
 import app.vendanozap.printagent.print.Printers
-import app.vendanozap.printagent.print.TestReceipt
 import app.vendanozap.printagent.service.AgentForegroundService
+import app.vendanozap.printagent.service.SyncEngine
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -72,7 +74,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PAIRING, PRINTER, STATUS }
+private enum class Screen { PAIRING, PRINTER, PRINTER_MODE, STATUS }
 
 @Composable
 private fun Root(prefs: Prefs) {
@@ -87,11 +89,15 @@ private fun Root(prefs: Prefs) {
     }
     when (screen) {
         Screen.PAIRING -> PairingScreen(prefs) { screen = Screen.PRINTER }
-        Screen.PRINTER -> PrinterScreen(prefs) { screen = Screen.STATUS }
+        // Escolher a impressora leva ao teste guiado (acha o modo certo), e só
+        // depois ao status. "Trocar impressora" reusa o mesmo caminho.
+        Screen.PRINTER -> PrinterScreen(prefs) { screen = Screen.PRINTER_MODE }
+        Screen.PRINTER_MODE -> PrinterModeWizard(prefs, onDone = { screen = Screen.STATUS })
         Screen.STATUS -> StatusScreen(
             prefs,
             onRepair = { screen = Screen.PAIRING },
             onChangePrinter = { screen = Screen.PRINTER },
+            onRetest = { screen = Screen.PRINTER_MODE },
         )
     }
 }
@@ -209,12 +215,9 @@ private fun PairingScreen(prefs: Prefs, onDone: () -> Unit) {
 @Composable
 private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
     var hasBtPermission by remember { mutableStateOf(hasBluetoothPermission(context)) }
     var bonded by remember { mutableStateOf(listBonded(context, hasBtPermission)) }
     var tcpHost by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
     var showAllDevices by remember { mutableStateOf(false) }
     var showNetwork by remember { mutableStateOf(false) }
 
@@ -231,36 +234,13 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
         }
     }
 
-    fun testAndSave(config: PrinterConfig) {
-        busy = true; status = "Identificando impressora…"
-        scope.launch {
-            try {
-                // Sonda GS I + heurística de nome decidem o modo sozinhas
-                // (análogo Android da detecção por VID do agente Windows).
-                val probe = Printers.probeAndTest(context, config, prefs.storeName)
-                prefs.printer = config
-                prefs.asciiMode = probe.asciiMode
-                AgentState.log(
-                    "Impressora: ${probe.identity ?: config.name.ifBlank { config.address }} → " +
-                        if (probe.asciiMode) "modo sem acentos (genérica)" else "modo normal (CP858)",
-                )
-                // Destrava o gate printerConnectedAt já na configuração.
-                runCatching {
-                    app.vendanozap.printagent.service.SyncEngine(context, prefs, ApiClient(context, prefs))
-                        .ensurePrinterReadyReported(
-                            config.name,
-                            config.type.name.lowercase(),
-                            probe.identity,
-                        )
-                }
-                status = null
-                onDone()
-            } catch (e: Exception) {
-                status = "Falha no teste: ${e.message}"
-            } finally {
-                busy = false
-            }
-        }
+    fun selectPrinter(config: PrinterConfig) {
+        // Salva a impressora e vai pro teste guiado (que descobre o modo de
+        // impressão e destrava o gate printerConnectedAt ao concluir). Sem
+        // sondagem/heurística aqui — quem decide o modo é o lojista no wizard.
+        prefs.printer = config
+        AgentState.log("Impressora selecionada: ${config.name.ifBlank { config.address }}")
+        onDone()
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
@@ -287,7 +267,7 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     onClick = {
-                        if (!busy) testAndSave(PrinterConfig(PrinterType.BLUETOOTH, mac, name = name))
+                        selectPrinter(PrinterConfig(PrinterType.BLUETOOTH, mac, name = name))
                     },
                 ) {
                     Column(Modifier.padding(14.dp)) {
@@ -343,15 +323,11 @@ private fun PrinterScreen(prefs: Prefs, onDone: () -> Unit) {
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = {
-                        if (!busy) testAndSave(PrinterConfig(PrinterType.TCP, tcpHost, name = "Rede $tcpHost"))
+                        selectPrinter(PrinterConfig(PrinterType.TCP, tcpHost, name = "Rede $tcpHost"))
                     },
-                    enabled = tcpHost.isNotBlank() && !busy,
-                ) { Text("Testar") }
+                    enabled = tcpHost.isNotBlank(),
+                ) { Text("Usar") }
             }
-        }
-        status?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
         }
         Spacer(Modifier.height(16.dp))
     }
@@ -400,7 +376,12 @@ private fun hasBluetoothPermission(context: Context): Boolean =
 // ------------------------------------------------------------------- Status
 
 @Composable
-private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: () -> Unit) {
+private fun StatusScreen(
+    prefs: Prefs,
+    onRepair: () -> Unit,
+    onChangePrinter: () -> Unit,
+    onRetest: () -> Unit,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val running by AgentState.serviceRunning.collectAsState()
@@ -410,7 +391,6 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
     val needsRepair by AgentState.needsRepair.collectAsState()
     val printerStatus by AgentState.printerStatus.collectAsState()
     var busy by remember { mutableStateOf(false) }
-    var asciiMode by remember { mutableStateOf(prefs.asciiMode) }
 
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -434,8 +414,7 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
         Text(
             prefs.printer?.let {
                 val tipo = if (it.type == PrinterType.BLUETOOTH) "Bluetooth" else "Rede"
-                val modo = if (prefs.asciiMode) ", sem acentos" else ""
-                "${it.name.ifBlank { it.address }} ($tipo$modo)"
+                "${it.name.ifBlank { it.address }} ($tipo · ${prefs.printerMode.label})"
             } ?: "Sem impressora",
             fontSize = 13.sp,
         )
@@ -494,11 +473,10 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
                     scope.launch {
                         try {
                             prefs.printer?.let {
-                                val receipt = if (prefs.asciiMode) TestReceipt.buildAscii(prefs.storeName)
-                                else TestReceipt.build(prefs.storeName)
-                                Printers.print(context, it, receipt)
+                                val bytes = ApiClient(context, prefs).testReceipt(prefs.printerMode.wire)
+                                Printers.print(context, it, bytes)
                             }
-                            AgentState.log("Teste de impressão enviado")
+                            AgentState.log("Teste de impressão enviado (${prefs.printerMode.label})")
                             AgentState.setPrinterOk()
                         } catch (e: Exception) {
                             AgentState.log("Teste falhou: ${e.message}", isError = true)
@@ -528,16 +506,13 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Imprimir sem acentos", fontSize = 13.sp)
+                Text("Tipo de impressão: ${prefs.printerMode.label}", fontSize = 13.sp)
                 Text(
-                    "Ligue se a impressora come ou erra letras com acento",
+                    "Refaça o teste se o acento sair errado ou nada imprimir",
                     fontSize = 11.sp, color = Color.Gray,
                 )
             }
-            Switch(
-                checked = asciiMode,
-                onCheckedChange = { on -> asciiMode = on; prefs.asciiMode = on },
-            )
+            TextButton(onClick = onRetest) { Text("Refazer teste") }
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -560,6 +535,174 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
             }
         }
     }
+}
+
+// ------------------------------------------------------ Teste guiado (modo)
+
+private enum class WizStep { PRINTING, ASK_PRINTED, ASK_QUALITY, PROBLEM, DEAD_END }
+
+// Pergunta de QUALIDADE por modo. No raster o acento é garantido (é imagem),
+// então a pergunta é sobre nitidez/integridade; o ASCII é o resgate legível.
+private fun qualityQuestion(mode: PrinterMode): String = when (mode) {
+    PrinterMode.ESCPOS -> "Os acentos saíram certos? (ç, ã, é, ô)"
+    PrinterMode.RASTER -> "O cupom saiu nítido e completo?"
+    PrinterMode.ASCII -> "O cupom saiu legível (mesmo sem acento)?"
+}
+
+// Escala: Texto (rápido) → Imagem (acento garantido) → Simples (sem acento).
+private fun nextMode(mode: PrinterMode): PrinterMode? = when (mode) {
+    PrinterMode.ESCPOS -> PrinterMode.RASTER
+    PrinterMode.RASTER -> PrinterMode.ASCII
+    PrinterMode.ASCII -> null
+}
+
+/**
+ * Onboarding guiado do modo de impressão: imprime um cupom de teste, pergunta
+ * "saiu?" e "acentos certos?", e escala de modo sozinho até o lojista confirmar.
+ * O lojista nunca vê "ESC/POS/raster/ascii" — só responde como o cupom saiu.
+ */
+@Composable
+private fun PrinterModeWizard(prefs: Prefs, onDone: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val log by AgentState.log.collectAsState()
+    var mode by remember { mutableStateOf(PrinterMode.ESCPOS) }
+    var step by remember { mutableStateOf(WizStep.PRINTING) }
+    var problem by remember { mutableStateOf<String?>(null) }
+
+    fun printTest(m: PrinterMode) {
+        mode = m; step = WizStep.PRINTING; problem = null
+        scope.launch {
+            val printer = prefs.printer
+            if (printer == null) {
+                problem = "Impressora não configurada."; step = WizStep.PROBLEM; return@launch
+            }
+            try {
+                val bytes = ApiClient(context, prefs).testReceipt(m.wire)
+                Printers.print(context, printer, bytes)
+                step = WizStep.ASK_PRINTED
+            } catch (e: PrinterException) {
+                problem = e.message ?: "Impressora fora de alcance ou desligada"
+                step = WizStep.PROBLEM
+            } catch (e: Exception) {
+                problem = "Não foi possível gerar o teste — confira a internet do celular. (${e.message})"
+                step = WizStep.PROBLEM
+            }
+        }
+    }
+
+    fun finish(m: PrinterMode) {
+        prefs.printerMode = m
+        AgentState.log("Modo de impressão definido: ${m.label} (${m.wire})")
+        scope.launch {
+            // Concluir o teste destrava o gate printerConnectedAt e já drena a fila.
+            prefs.printer?.let { p ->
+                runCatching {
+                    SyncEngine(context, prefs, ApiClient(context, prefs))
+                        .ensurePrinterReadyReported(p.name, p.type.name.lowercase())
+                }
+            }
+            AgentForegroundService.sync(context, "mode_selected")
+            onDone()
+        }
+    }
+
+    LaunchedEffect(Unit) { printTest(PrinterMode.ESCPOS) }
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Spacer(Modifier.height(8.dp))
+        Text("Teste da impressora", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Vamos imprimir um cupom de teste e achar o ajuste certo da sua impressora. " +
+                "É só dizer como o cupom saiu.",
+            fontSize = 13.sp, color = Color.Gray,
+        )
+        Spacer(Modifier.height(24.dp))
+
+        when (step) {
+            WizStep.PRINTING -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(12.dp))
+                Text("Imprimindo o teste…", fontSize = 15.sp)
+            }
+
+            WizStep.ASK_PRINTED -> WizQuestion(
+                "Saiu o cupom de teste na impressora?",
+                onYes = { step = WizStep.ASK_QUALITY },
+                onNo = { problem = "O cupom não saiu na impressora."; step = WizStep.PROBLEM },
+            )
+
+            WizStep.ASK_QUALITY -> WizQuestion(
+                qualityQuestion(mode),
+                yesLabel = "Sim, ficou bom",
+                noLabel = "Não / saiu errado",
+                onYes = { finish(mode) },
+                onNo = {
+                    val n = nextMode(mode)
+                    if (n == null) step = WizStep.DEAD_END else printTest(n)
+                },
+            )
+
+            WizStep.PROBLEM -> {
+                Text(problem ?: "Algo deu errado.", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Confira: impressora ligada, com papel, pareada no Bluetooth e por perto. Depois tente de novo.",
+                    fontSize = 13.sp, color = Color.Gray,
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(onClick = { printTest(mode) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Imprimir de novo")
+                }
+                nextMode(mode)?.let { n ->
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick = { printTest(n) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Tentar outro tipo de impressão")
+                    }
+                }
+            }
+
+            WizStep.DEAD_END -> {
+                Text("Não achamos um cupom legível", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Costuma ser conexão ou a própria impressora. Envie os logs pro suporte que a gente te ajuda.",
+                    fontSize = 13.sp, color = Color.Gray,
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = { Support.openSupport(context, prefs, log) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Enviar logs ao suporte") }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { printTest(PrinterMode.ESCPOS) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Começar de novo") }
+                Spacer(Modifier.height(10.dp))
+                TextButton(
+                    onClick = { finish(PrinterMode.ESCPOS) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Concluir mesmo assim") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WizQuestion(
+    question: String,
+    yesLabel: String = "Sim",
+    noLabel: String = "Não",
+    onYes: () -> Unit,
+    onNo: () -> Unit,
+) {
+    Text(question, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+    Spacer(Modifier.height(20.dp))
+    Button(onClick = onYes, modifier = Modifier.fillMaxWidth()) { Text(yesLabel) }
+    Spacer(Modifier.height(10.dp))
+    OutlinedButton(onClick = onNo, modifier = Modifier.fillMaxWidth()) { Text(noLabel) }
 }
 
 @Composable

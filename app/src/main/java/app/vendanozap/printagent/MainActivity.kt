@@ -488,11 +488,6 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
 
         Spacer(Modifier.height(10.dp))
         Row {
-            Button(
-                onClick = { AgentForegroundService.sync(context, "manual") },
-                modifier = Modifier.weight(1f),
-            ) { Text("Sincronizar agora") }
-            Spacer(Modifier.width(8.dp))
             OutlinedButton(
                 onClick = {
                     busy = true

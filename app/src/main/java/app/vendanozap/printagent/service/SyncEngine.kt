@@ -46,6 +46,8 @@ class SyncEngine(
                         Printers.print(context, printer, bytes)
                         val durationMs = System.currentTimeMillis() - startedAt
                         api.ack(item.id, durationMs)
+                        AgentState.setPrinterOk()
+                        Alerts.clearPrintFailed(context)
                         ensurePrinterReadyReported(printer.name, printer.type.name.lowercase())
                         printed++
                         AgentState.incrementPrinted()
@@ -64,7 +66,10 @@ class SyncEngine(
                             ),
                         )
                     } catch (e: PrinterException) {
-                        AgentState.log("Pedido não impresso: ${e.message}", isError = true)
+                        val failMsg = e.message ?: "Impressora fora de alcance ou desligada"
+                        AgentState.log("Pedido não impresso: $failMsg", isError = true)
+                        AgentState.setPrinterFailed(failMsg)
+                        Alerts.printFailed(context, failMsg)
                         api.release(item.id, e.code, e.message)
                         api.telemetry(
                             "print_failure",
@@ -123,6 +128,8 @@ class SyncEngine(
                 try {
                     Printers.print(context, printer, TestReceipt.plainText(text))
                     api.ack(item.id, System.currentTimeMillis() - startedAt)
+                    AgentState.setPrinterOk()
+                    Alerts.clearPrintFailed(context)
                     ensurePrinterReadyReported(printer.name, printer.type.name.lowercase())
                     printed++
                     progressed = true
@@ -140,7 +147,10 @@ class SyncEngine(
                         ),
                     )
                 } catch (e: PrinterException) {
-                    AgentState.log("Pedido não impresso: ${e.message}", isError = true)
+                    val failMsg = e.message ?: "Impressora fora de alcance ou desligada"
+                    AgentState.log("Pedido não impresso: $failMsg", isError = true)
+                    AgentState.setPrinterFailed(failMsg)
+                    Alerts.printFailed(context, failMsg)
                     api.release(item.id, e.code, e.message)
                     api.telemetry(
                         "print_failure",

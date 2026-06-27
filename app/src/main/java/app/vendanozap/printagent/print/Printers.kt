@@ -100,7 +100,7 @@ object Printers {
     /** Nomes Bluetooth típicos de térmicas genéricas (base inicial; a telemetria da frota alimenta a evolução). */
     private val GENERIC_NAME_PATTERNS = listOf(
         Regex("PT-?2\\d{2}", RegexOption.IGNORE_CASE),        // Goojprt PT-210/280
-        Regex("M[PT]T-?(II|2|3)", RegexOption.IGNORE_CASE),   // MTP-II / MPT-3
+        Regex("M[TP][TP]-?(II|2|3)", RegexOption.IGNORE_CASE), // MTP-II / MPT-II / MPT-3 (clones trocam as letras)
         Regex("ZJ-?\\d{2}", RegexOption.IGNORE_CASE),         // Zijiang ZJ-58/80
         Regex("POS-?\\d{2}", RegexOption.IGNORE_CASE),        // POS58/POS80 genéricas
         Regex("GOOJPRT", RegexOption.IGNORE_CASE),

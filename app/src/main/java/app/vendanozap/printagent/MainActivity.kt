@@ -408,7 +408,9 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
     val printed by AgentState.printedCount.collectAsState()
     val log by AgentState.log.collectAsState()
     val needsRepair by AgentState.needsRepair.collectAsState()
+    val printerStatus by AgentState.printerStatus.collectAsState()
     var busy by remember { mutableStateOf(false) }
+    var asciiMode by remember { mutableStateOf(prefs.asciiMode) }
 
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -437,6 +439,15 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
             } ?: "Sem impressora",
             fontSize = 13.sp,
         )
+        printerStatus?.let { ps ->
+            Text(
+                if (ps.ok) "● Impressora respondeu às ${ps.timeLabel}"
+                else "● Sem conexão (${ps.timeLabel}) — ligue e aproxime a impressora",
+                color = if (ps.ok) Color(0xFF2E7D32) else Color(0xFFC62828),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
         Spacer(Modifier.height(10.dp))
 
         if (needsRepair) {
@@ -493,8 +504,10 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
                                 Printers.print(context, it, receipt)
                             }
                             AgentState.log("Teste de impressão enviado")
+                            AgentState.setPrinterOk()
                         } catch (e: Exception) {
                             AgentState.log("Teste falhou: ${e.message}", isError = true)
+                            AgentState.setPrinterFailed(e.message ?: "Impressora fora de alcance ou desligada")
                         } finally { busy = false }
                     }
                 },
@@ -516,6 +529,20 @@ private fun StatusScreen(prefs: Prefs, onRepair: () -> Unit, onChangePrinter: ()
             TextButton(onClick = onChangePrinter) { Text("Trocar impressora") }
             Spacer(Modifier.weight(1f))
             BatteryButton()
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Imprimir sem acentos", fontSize = 13.sp)
+                Text(
+                    "Ligue se a impressora come ou erra letras com acento",
+                    fontSize = 11.sp, color = Color.Gray,
+                )
+            }
+            Switch(
+                checked = asciiMode,
+                onCheckedChange = { on -> asciiMode = on; prefs.asciiMode = on },
+            )
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
